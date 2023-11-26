@@ -77,6 +77,7 @@ class Simulator(BaseSimObj):
         self.peak = 0
         self.ev_history = {}
         self.event_history = []
+        self.high_priority_ev_sessions = []  # Added to keep track of high priority EVs
         if store_schedule_history:
             self.schedule_history = {}
         else:
@@ -218,57 +219,90 @@ class Simulator(BaseSimObj):
         Returns:
             None
         """
-        # My changes to unplug EVs before full charge (line 212-237)
+        # My changes to unplug EVs before full charge and plug in high priority EVs
         # (TO DO: should I use a namedtuple to store session_id, station_id, remaining_demand?)
-        unpluged_before = []
-        # base_event = event
-        # scheduling_priority = ""
-        # if len(base_event) == 2:
-        #     event = base_event[0]
-        #     scheduling_priority = base_event[1]
-        if event.event_type == "Plugin":
-            self._print("Plugin Event...")
-            evs_remaining_demand = [
-                (
-                    ev._session_id,
-                    ev.station_id,
-                    round((ev.remaining_demand / ev.requested_energy) * 100, 4),
-                )
-                for ev in self.get_active_evs()
-                if (ev.remaining_demand / ev.requested_energy) * 100 < 0.30
-            ]
-            sorted_evs_with_remaining_demand = sorted(
-                evs_remaining_demand, key=lambda i: i[2]
-            )
-            if len(sorted_evs_with_remaining_demand) > 0:
-                ev_to_unplug = sorted_evs_with_remaining_demand[0]
-                ev_to_unplug_session_id = ev_to_unplug[0]
-                ev_to_unplug_station_id = ev_to_unplug[1]
-                # print(ev_to_unplug)
-                # ev_to_unplug_ev = self.ev_history[ev_to_unplug_session_id]
-                self.network.unplug(ev_to_unplug_station_id, ev_to_unplug_session_id)
+        try:
+            if event.event_type == "Plugin":
+                self._print("Plugin Event...")
+                if len(self.network.available_evses()) == 0:
+                    evs_remaining_demand = [
+                        (
+                            ev._session_id,
+                            ev.station_id,
+                            round((ev.remaining_demand / ev.requested_energy) * 100, 4),
+                        )
+                        for ev in self.get_active_evs()
+                        if (ev._session_id not in self.high_priority_ev_sessions)
+                        and (ev.remaining_demand / ev.requested_energy) * 100 < 0.30
+                    ]
+                    sorted_evs_with_remaining_demand = sorted(
+                        evs_remaining_demand, key=lambda i: i[2]
+                    )
+                    if len(sorted_evs_with_remaining_demand) > 0:
+                        ev_to_unplug = sorted_evs_with_remaining_demand[0]
+                        ev_to_unplug_session_id = ev_to_unplug[0]
+                        ev_to_unplug_station_id = ev_to_unplug[1]
+                        self.network.unplug(
+                            ev_to_unplug_station_id, ev_to_unplug_session_id
+                        )
+                        print(
+                            f"Unplugged EV {ev_to_unplug_session_id} from station {ev_to_unplug_station_id} before full charge"
+                        )
+                    # self.ev_history.pop(ev_to_unplug_session_id)
+                self.network.plugin(event.ev)
+                ongoing_sessions = [ev._session_id for ev in self.get_active_evs()]
+                print(f"on-going session: {ongoing_sessions}")
+                print(f"Waiting queue: {self.network.waiting_queue}")
+                self.ev_history[event.ev.session_id] = event.ev
+                self.event_queue.add_event(UnplugEvent(event.ev.departure, event.ev))
+                self._resolve = True
+                self._last_schedule_update = event.timestamp
                 print(
-                    f"Unplugged EV {ev_to_unplug_session_id} from station {ev_to_unplug_station_id} before full charge"
+                    f"High priority EV charging sessions: {self.high_priority_ev_sessions}"
                 )
-                print(f"Will plug in priority EV {event.ev.session_id}")
-                unpluged_before.append(ev_to_unplug_session_id)
-                # self.ev_history.pop(ev_to_unplug_session_id)
-            self.network.plugin(event.ev)
-            self.ev_history[event.ev.session_id] = event.ev
-            self.event_queue.add_event(UnplugEvent(event.ev.departure, event.ev))
-            self._resolve = True
-            self._last_schedule_update = event.timestamp
-        elif event.event_type == "Unplug":
-            self._print("Unplug Event...")
-            if event.ev.session_id in unpluged_before:
-                pass
-            else:
+            elif event.event_type == "Unplug":
+                self._print("Unplug Event...")
                 self.network.unplug(event.ev.station_id, event.ev.session_id)
                 self._resolve = True
                 self._last_schedule_update = event.timestamp
-        elif event.event_type == "Recompute":
-            self._print("Recompute Event...")
-            self._resolve = True
+            elif event.event_type == "Recompute":
+                self._print("Recompute Event...")
+                self._resolve = True
+        except AttributeError as e:
+            if len(event) == 2:
+                actual_event = event[0]  # for now assume this event is a Plugin Event
+                # Checking how many changring stations are available and unplugging an EV if none are available
+                # to plug in the incoming priority EV
+                if len(self.network.available_evses()) == 0:
+                    evs_remaining_demand = [
+                        (
+                            ev._session_id,
+                            ev.station_id,
+                            ev.remaining_demand,
+                        )
+                        for ev in self.get_active_evs()
+                    ]
+                    sorted_evs_with_remaining_demand = sorted(
+                        evs_remaining_demand, key=lambda i: i[2]
+                    )
+                    print("Unplugging an EV as all EVSEs are occupied")
+                    ev_to_unplug = sorted_evs_with_remaining_demand[0]
+                    ev_to_unplug_session_id = ev_to_unplug[0]
+                    ev_to_unplug_station_id = ev_to_unplug[1]
+                    self.network.unplug(
+                        ev_to_unplug_station_id, ev_to_unplug_session_id
+                    )
+                    print(
+                        f"Unplugged EV {ev_to_unplug_session_id} from station {ev_to_unplug_station_id} to plug-in high priority EV {actual_event.ev.session_id}"
+                    )
+                    self.network.plugin(actual_event.ev)
+                    self.ev_history[actual_event.ev.session_id] = actual_event.ev
+                    self.high_priority_ev_sessions.append(actual_event.ev.session_id)
+                    self.event_queue.add_event(
+                        UnplugEvent(actual_event.ev.departure, actual_event.ev)
+                    )
+                    self._resolve = True
+                    self._last_schedule_update = actual_event.timestamp
 
     def _update_schedules(self, new_schedule):
         """Extend the current self.pilot_signals with the new pilot signal schedule.
