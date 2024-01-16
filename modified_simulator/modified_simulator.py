@@ -252,7 +252,8 @@ class Simulator(BaseSimObj):
                 self.network.plugin(event.ev)
                 ongoing_sessions = [ev._session_id for ev in self.get_active_evs()]
                 print(f"on-going session: {ongoing_sessions}")
-                print(f"Waiting queue: {self.network.waiting_queue}")
+                print(f"Charging rate: {self.network.current_charging_rates}")
+                # print(f"Waiting queue: {self.network.waiting_queue}")
                 self.ev_history[event.ev.session_id] = event.ev
                 self.event_queue.add_event(UnplugEvent(event.ev.departure, event.ev))
                 self._resolve = True
