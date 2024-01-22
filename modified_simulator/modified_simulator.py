@@ -245,22 +245,22 @@ class Simulator(BaseSimObj):
                         self.network.unplug(
                             ev_to_unplug_station_id, ev_to_unplug_session_id
                         )
-                        print(
-                            f"Unplugged EV {ev_to_unplug_session_id} from station {ev_to_unplug_station_id} before full charge"
-                        )
+                        # print(
+                        #     f"Unplugged EV {ev_to_unplug_session_id} from station {ev_to_unplug_station_id} before full charge"
+                        # )
                     # self.ev_history.pop(ev_to_unplug_session_id)
                 self.network.plugin(event.ev)
                 ongoing_sessions = [ev._session_id for ev in self.get_active_evs()]
-                print(f"on-going session: {ongoing_sessions}")
-                print(f"Charging rate: {self.network.current_charging_rates}")
+                # print(f"on-going session: {ongoing_sessions}")
+                # print(f"Charging rate: {self.network.current_charging_rates}")
                 # print(f"Waiting queue: {self.network.waiting_queue}")
                 self.ev_history[event.ev.session_id] = event.ev
                 self.event_queue.add_event(UnplugEvent(event.ev.departure, event.ev))
                 self._resolve = True
                 self._last_schedule_update = event.timestamp
-                print(
-                    f"High priority EV charging sessions: {self.high_priority_ev_sessions}"
-                )
+                # print(
+                #     f"High priority EV charging sessions: {self.high_priority_ev_sessions}"
+                # )
             elif event.event_type == "Unplug":
                 self._print("Unplug Event...")
                 self.network.unplug(event.ev.station_id, event.ev.session_id)
@@ -282,6 +282,7 @@ class Simulator(BaseSimObj):
                             ev.remaining_demand,
                         )
                         for ev in self.get_active_evs()
+                        if (ev._session_id not in self.high_priority_ev_sessions)
                     ]
                     sorted_evs_with_remaining_demand = sorted(
                         evs_remaining_demand, key=lambda i: i[2]

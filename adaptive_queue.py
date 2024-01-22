@@ -4,7 +4,7 @@ from acnportal.acnsim.base import BaseSimObj
 from typing import Optional, Dict, Any, Tuple
 
 
-class EventQueue(BaseSimObj):
+class AdaptiveEventQueue(BaseSimObj):
     """Queue which stores simulation events.
 
     Args:
