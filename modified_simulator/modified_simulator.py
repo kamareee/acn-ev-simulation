@@ -250,8 +250,6 @@ class Simulator(BaseSimObj):
                         # )
                     # self.ev_history.pop(ev_to_unplug_session_id)
                 self.network.plugin(event.ev)
-                ongoing_sessions = [ev._session_id for ev in self.get_active_evs()]
-                # print(f"on-going session: {ongoing_sessions}")
                 # print(f"Charging rate: {self.network.current_charging_rates}")
                 # print(f"Waiting queue: {self.network.waiting_queue}")
                 self.ev_history[event.ev.session_id] = event.ev
@@ -261,9 +259,20 @@ class Simulator(BaseSimObj):
                 # print(
                 #     f"High priority EV charging sessions: {self.high_priority_ev_sessions}"
                 # )
+                # ongoing_high_priority_sessions = [
+                #     ev._session_id
+                #     for ev in self.get_active_evs()
+                #     if ev._session_id in self.high_priority_ev_sessions
+                # ]
+                # print(f"on-going session: {ongoing_high_priority_sessions}")
             elif event.event_type == "Unplug":
                 self._print("Unplug Event...")
                 self.network.unplug(event.ev.station_id, event.ev.session_id)
+                if event.ev.session_id in self.high_priority_ev_sessions:
+                    self.high_priority_ev_sessions.remove(event.ev.session_id)
+                # print(
+                #     f"High priority EV charging sessions after: {self.high_priority_ev_sessions}"
+                # )
                 self._resolve = True
                 self._last_schedule_update = event.timestamp
             elif event.event_type == "Recompute":
