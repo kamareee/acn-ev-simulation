@@ -2,7 +2,13 @@ from typing import List, Union, Optional
 from collections import namedtuple
 import numpy as np
 import cvxpy as cp
-from acnportal.acnsim.interface import Interface, SessionInfo, InfrastructureInfo
+
+# from acnportal.acnsim.interface import Interface, SessionInfo, InfrastructureInfo
+from modified_adacharge.modified_interface import (
+    Interface,
+    SessionInfo,
+    InfrastructureInfo,
+)
 
 
 class InfeasibilityException(Exception):
@@ -201,7 +207,7 @@ class AdaptiveChargingOptimization:
         self, rates: cp.Variable, infrastructure: InfrastructureInfo, **kwargs
     ):
         def _merge_dicts(*args):
-            """ Merge two dictionaries where d2 override d1 when there is a conflict. """
+            """Merge two dictionaries where d2 override d1 when there is a conflict."""
             merged = dict()
             for d in args:
                 merged.update(d)
@@ -334,25 +340,25 @@ class AdaptiveChargingOptimization:
 
 
 def charging_power(rates, infrastructure, **kwargs):
-    """ Returns a matrix with the same shape as rates but with units kW instead of A. """
+    """Returns a matrix with the same shape as rates but with units kW instead of A."""
     voltage_matrix = np.tile(infrastructure.voltages, (rates.shape[1], 1)).T
     return cp.multiply(rates, voltage_matrix) / 1e3
 
 
 def aggregate_power(rates, infrastructure, **kwargs):
-    """ Returns aggregate charging power for each time period. """
+    """Returns aggregate charging power for each time period."""
     return cp.sum(charging_power(rates, infrastructure=infrastructure), axis=0)
 
 
 def get_period_energy(rates, infrastructure, period, **kwargs):
-    """ Return energy delivered in kWh during each time period and each session. """
+    """Return energy delivered in kWh during each time period and each session."""
     power = charging_power(rates, infrastructure=infrastructure)
     period_in_hours = period / 60
     return power * period_in_hours
 
 
 def aggregate_period_energy(rates, infrastructure, interface, **kwargs):
-    """ Returns the aggregate energy delivered in kWh during each time period. """
+    """Returns the aggregate energy delivered in kWh during each time period."""
     # get charging rates in kWh per period
     energy_per_period = get_period_energy(
         rates, infrastructure=infrastructure, period=interface.period

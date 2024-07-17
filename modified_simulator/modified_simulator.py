@@ -15,7 +15,8 @@ from acnportal.acnsim.events import *
 from acnportal.acnsim.events import UnplugEvent
 
 # from .interface import Interface
-from acnportal.acnsim.interface import Interface
+# from acnportal.acnsim.interface import Interface
+from modified_adacharge.modified_interface import Interface
 
 # from .interface import InvalidScheduleError
 from acnportal.acnsim.interface import InvalidScheduleError
@@ -345,9 +346,11 @@ class Simulator(BaseSimObj):
 
         schedule_matrix = np.array(
             [
-                new_schedule[evse_id]
-                if evse_id in new_schedule
-                else [0] * schedule_length
+                (
+                    new_schedule[evse_id]
+                    if evse_id in new_schedule
+                    else [0] * schedule_length
+                )
                 for evse_id in self.network.station_ids
             ]
         )
