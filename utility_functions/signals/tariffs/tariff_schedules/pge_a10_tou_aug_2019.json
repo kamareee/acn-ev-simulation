@@ -8,7 +8,7 @@
             "effective_start": "05-01",
             "effective_end": "10-31",
             "dow_mask": "WEEKDAYS",
-            "times": [0, 8.5, 12, 18, 21.5],
+            "times": [0, 9, 12, 18, 21.5],
             "tariffs": [0.14903, 0.1771, 0.23223, 0.1771, 0.14903],
             "demand_charge": 19.99
         },

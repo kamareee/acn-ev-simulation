@@ -416,27 +416,19 @@ def load_flattening(rates, infrastructure, interface, external_signal=None, **kw
 
 def tou_energy_cost_with_pv(rates, infrastructure, interface, **kwargs):
     current_prices = interface.get_prices(rates.shape[1])  # $/kWh
-    # PV power calculation
-    # voltage_matrix = np.tile(infrastructure.voltages, (rates.shape[1], 1)).T
-    # pv_power = cp.multiply(rates * 0.1, voltage_matrix) / 1e3
-    # period_in_hours = interface.period / 60
-    # pv_period_energy = pv_power * period_in_hours
-    # aggregate_pv_period_energy = cp.sum(pv_period_energy, axis=0)
     return -current_prices @ (
-        aggregate_period_energy(rates, infrastructure, interface) - 2
+        aggregate_period_energy(rates, infrastructure, interface) - 5
     )
 
 
 def non_completion_penalty(rates, infrastructure, interface, **kwargs):
-    # Check quick charge function to modify this.
-    # Do we need to calculate requested energy for each time period?
-    session_requested_energy = [
-        session.requested_energy for session in interface.active_sessions()
-    ]
+    session_requested_energy = np.array(
+        [session.requested_energy for session in interface.active_sessions()]
+    )
     requested_energy = cp.sum(session_requested_energy)
     return -cp.norm(
         aggregate_period_energy(rates, infrastructure, interface) - requested_energy,
-        p=1.2,
+        p=1,
     )
 
 
