@@ -234,7 +234,7 @@ class Simulator(BaseSimObj):
                         )
                         for ev in self.get_active_evs()
                         if (ev._session_id not in self.high_priority_ev_sessions)
-                        and (ev.remaining_demand / ev.requested_energy) * 100 < 0.30
+                        and (ev.remaining_demand / ev.requested_energy) * 100 < 0.10
                     ]
                     sorted_evs_with_remaining_demand = sorted(
                         evs_remaining_demand, key=lambda i: i[2]
