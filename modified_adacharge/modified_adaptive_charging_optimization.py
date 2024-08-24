@@ -280,7 +280,10 @@ class AdaptiveChargingOptimization:
         constraints.update(self.peak_constraint(rates, peak_limit))
 
         # Objective Function
-        objective = cp.Maximize(
+        # objective = cp.Maximize(
+        #     self.build_objective(rates, infrastructure, prev_peak=prev_peak)
+        # )
+        objective = cp.Minimize(
             self.build_objective(rates, infrastructure, prev_peak=prev_peak)
         )
         return {
@@ -430,6 +433,9 @@ def non_completion_penalty(rates, infrastructure, interface, **kwargs):
         [session.requested_energy for session in interface.active_sessions()]
     )
     requested_energy = cp.sum(session_requested_energy)
+    # return -cp.norm(
+    #     aggregate_period_energy(rates, infrastructure, interface) - requested_energy,
+    #     p=1,
     return cp.norm(
         aggregate_period_energy(rates, infrastructure, interface) - requested_energy,
         p=1,
