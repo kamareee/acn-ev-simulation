@@ -1,6 +1,7 @@
 import numpy as np
 import warnings
 import datetime
+from typing import List
 
 
 def aggregate_current(sim):
@@ -71,6 +72,31 @@ def proportion_of_energy_delivered(sim):
     total_requested = sum(ev.requested_energy for ev in sim.ev_history.values())
     total_delivered = total_energy_delivered(sim)
     return total_delivered / total_requested
+
+
+def proportion_of_priority_evs_energy_delivered(sim, priority_sessions: List[str]):
+    """Calculate the percentage of total energy delivered over total energy requested for priority evs.
+
+    Args:
+        sim (Simulator): A Simulator object which has been run.
+
+    Returns:
+        float: Proportion of total energy requested which was delivered during the simulation.
+    """
+    if len(priority_sessions) == 0:
+        return 0
+    else:
+        total_requested_by_priority_evs = sum(
+            ev.requested_energy
+            for ev in sim.ev_history.values()
+            if ev._session_id in priority_sessions
+        )
+        total_delivered_to_priority_evs = sum(
+            ev.energy_delivered
+            for ev in sim.ev_history.values()
+            if ev._session_id in priority_sessions
+        )
+        return total_delivered_to_priority_evs / total_requested_by_priority_evs * 100
 
 
 def total_energy_delivered(sim):

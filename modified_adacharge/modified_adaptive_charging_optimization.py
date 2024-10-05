@@ -123,6 +123,15 @@ class AdaptiveChargingOptimization:
                 constraints[constraint_name] = (
                     planned_energy == session.remaining_demand
                 )
+            # elif session.session_id in [
+            #     "session_5",
+            #     "session_11",
+            #     "session_19",
+            #     "session_23",
+            # ]:
+            #     constraints[constraint_name] = (
+            #         planned_energy >= session.remaining_demand
+            #     )
             else:
                 constraints[constraint_name] = (
                     planned_energy <= session.remaining_demand
@@ -430,7 +439,7 @@ def tou_energy_cost_with_pv(rates, infrastructure, interface, **kwargs):
 
 def non_completion_penalty(rates, infrastructure, interface, **kwargs):
     session_requested_energy = np.array(
-        [session.requested_energy for session in interface.active_sessions()]
+        [session.remaining_demand for session in interface.active_sessions()]
     )
     requested_energy = cp.sum(session_requested_energy)
     # return -cp.norm(
@@ -438,6 +447,93 @@ def non_completion_penalty(rates, infrastructure, interface, **kwargs):
     #     p=1,
     return cp.norm(
         aggregate_period_energy(rates, infrastructure, interface) - requested_energy,
+        p=1,
+    )
+
+
+# This function is for non completion penalty with priority ev charging sessions
+def non_completion_penalty_for_priority_ev(rates, infrastructure, interface, **kwargs):
+    priority_sessions = [
+        session
+        for session in interface.active_sessions()
+        if session.session_id
+        in [
+            "session_3",
+            "session_5",
+            "session_10",
+            "session_12",
+            "session_21",
+        ]
+    ]
+
+    if not priority_sessions:
+        return cp.Constant(
+            np.random.uniform(0, 0.001)
+        )  # No penalty if no priority sessions
+
+    priority_requested_energy = np.array(
+        [session.remaining_demand for session in priority_sessions]
+    )
+    total_priority_requested_energy = cp.sum(priority_requested_energy)
+
+    # Calculate energy delivered to priority sessions
+    priority_indices = [
+        infrastructure.get_station_index(session.station_id)
+        for session in priority_sessions
+    ]
+    priority_rates = rates[priority_indices, :]
+
+    # Calculate energy delivered to priority sessions
+    priority_voltages = infrastructure.voltages[priority_indices]
+    priority_power = cp.multiply(priority_rates, priority_voltages[:, np.newaxis]) / 1e3
+    period_in_hours = interface.period / 60
+    priority_delivered_energy = cp.sum(priority_power * period_in_hours)
+
+    return cp.norm(priority_delivered_energy - total_priority_requested_energy, p=2)
+
+
+def non_completion_penalty_without_priority_ev(
+    rates, infrastructure, interface, **kwargs
+):
+    non_priority_sessions = [
+        session
+        for session in interface.active_sessions()
+        if session.session_id
+        not in [
+            "session_3",
+            "session_5",
+            "session_10",
+            "session_12",
+            "session_21",
+        ]
+    ]
+
+    if not non_priority_sessions:
+        return cp.Constant(np.random.uniform(0, 0.001))
+
+    non_priority_session_requested_energy = np.array(
+        [session.remaining_demand for session in non_priority_sessions]
+    )
+    total_non_priority_requested_energy = cp.sum(non_priority_session_requested_energy)
+    non_priority_indices = [
+        infrastructure.get_station_index(session.station_id)
+        for session in non_priority_sessions
+    ]
+
+    non_priority_rates = rates[non_priority_indices, :]
+
+    # Calculate energy delivered to priority sessions
+    non_priority_voltages = infrastructure.voltages[non_priority_indices]
+    non_priority_power = (
+        cp.multiply(non_priority_rates, non_priority_voltages[:, np.newaxis]) / 1e3
+    )
+    period_in_hours = interface.period / 60
+    non_priority_sessions_delivered_energy = cp.sum(
+        non_priority_power * period_in_hours
+    )
+
+    return cp.norm(
+        non_priority_sessions_delivered_energy - total_non_priority_requested_energy,
         p=1,
     )
 
