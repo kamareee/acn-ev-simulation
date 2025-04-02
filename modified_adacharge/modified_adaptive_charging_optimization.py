@@ -65,18 +65,40 @@ class AdaptiveChargingOptimization:
             List[cp.Constraint]: List of lower bound constraint, upper bound constraint.
         """
         lb, ub = np.zeros(rates.shape), np.zeros(rates.shape)
+        priority_sessions = [
+            "session_4",
+            "session_7",
+            "session_15",
+            "session_1",
+            "session_19",
+            "session_20",
+            "session_22",
+        ]
         for session in active_sessions:
             i = evse_index.index(session.station_id)
-            lb[
-                i,
-                session.arrival_offset : session.arrival_offset
-                + session.remaining_time,
-            ] = session.min_rates
-            ub[
-                i,
-                session.arrival_offset : session.arrival_offset
-                + session.remaining_time,
-            ] = session.max_rates
+            session_slice = slice(
+                session.arrival_offset, session.arrival_offset + session.remaining_time
+            )
+
+            if session.session_id in priority_sessions:
+                # Set a higher minimum charging rate for priority sessions
+                lb[i, session_slice] = np.maximum(
+                    session.min_rates, 8
+                )  # Example: minimum 6A for priority EVs
+            else:
+                lb[i, session_slice] = session.min_rates
+
+            ub[i, session_slice] = session.max_rates
+            # lb[
+            #     i,
+            #     session.arrival_offset : session.arrival_offset
+            #     + session.remaining_time,
+            # ] = session.min_rates
+            # ub[
+            #     i,
+            #     session.arrival_offset : session.arrival_offset
+            #     + session.remaining_time,
+            # ] = session.max_rates
         # To ensure feasibility, replace upper bound with lower bound when they conflict
         ub[ub < lb] = lb[ub < lb]
         return {
@@ -123,15 +145,18 @@ class AdaptiveChargingOptimization:
                 constraints[constraint_name] = (
                     planned_energy == session.remaining_demand
                 )
-            # elif session.session_id in [
-            #     "session_5",
-            #     "session_11",
-            #     "session_19",
-            #     "session_23",
-            # ]:
-            #     constraints[constraint_name] = (
-            #         planned_energy >= session.remaining_demand
-            #     )
+            elif session.session_id in [
+                "session_4",
+                "session_7",
+                "session_15",
+                "session_1",
+                "session_19",
+                "session_20",
+                "session_22",
+            ]:
+                constraints[constraint_name] = (
+                    planned_energy >= session.remaining_demand
+                )
             else:
                 constraints[constraint_name] = (
                     planned_energy <= session.remaining_demand
@@ -429,12 +454,18 @@ def load_flattening(rates, infrastructure, interface, external_signal=None, **kw
 def tou_energy_cost_with_pv(rates, infrastructure, interface, **kwargs):
     current_prices = interface.get_prices(rates.shape[1])  # $/kWh
     if interface.current_datetime.hour > 8 and interface.current_datetime.hour < 16:
-        pv_power = np.array([8 for i in range(rates.shape[1])])
+        pv_power = np.array([20 for i in range(rates.shape[1])])
     else:
         pv_power = np.array([5 for i in range(rates.shape[1])])
-    return current_prices @ (
-        aggregate_period_energy(rates, infrastructure, interface) - pv_power
-    )
+    # return current_prices @ (
+    #     aggregate_period_energy(rates, infrastructure, interface) - pv_power
+    # )
+
+    total_energy = aggregate_period_energy(rates, infrastructure, interface)
+
+    # Calculate grid energy
+    grid_energy = cp.maximum(total_energy - pv_power, 0)
+    return current_prices @ grid_energy
 
 
 def non_completion_penalty(rates, infrastructure, interface, **kwargs):
@@ -458,11 +489,12 @@ def non_completion_penalty_for_priority_ev(rates, infrastructure, interface, **k
         for session in interface.active_sessions()
         if session.session_id
         in [
-            "session_3",
+            "session_22",
             "session_5",
-            "session_10",
-            "session_12",
-            "session_21",
+            "session_24",
+            "session_7",
+            "session_2",
+            "session_13",
         ]
     ]
 
@@ -489,7 +521,8 @@ def non_completion_penalty_for_priority_ev(rates, infrastructure, interface, **k
     period_in_hours = interface.period / 60
     priority_delivered_energy = cp.sum(priority_power * period_in_hours)
 
-    return cp.norm(priority_delivered_energy - total_priority_requested_energy, p=2)
+    # return cp.norm(priority_delivered_energy - total_priority_requested_energy, p=1)
+    return cp.norm2(priority_delivered_energy - total_priority_requested_energy)
 
 
 def non_completion_penalty_without_priority_ev(
@@ -500,11 +533,13 @@ def non_completion_penalty_without_priority_ev(
         for session in interface.active_sessions()
         if session.session_id
         not in [
-            "session_3",
-            "session_5",
+            "session_2",
+            "session_4",
             "session_10",
             "session_12",
-            "session_21",
+            "session_16",
+            "session_19",
+            "session_20",
         ]
     ]
 

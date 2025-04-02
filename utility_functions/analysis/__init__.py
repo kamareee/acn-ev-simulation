@@ -125,7 +125,7 @@ def total_energy_requested(sim):
     return total_requested
 
 
-def proportion_of_demands_met(sim, threshold=0.1):
+def proportion_of_demands_met(sim, threshold=1):
     """Calculate the percentage of charging sessions where the energy request was met.
 
     Args:
