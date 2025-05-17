@@ -1,0 +1,7 @@
+Number of charger,Transformer capacity,Number of priority evs,Total number of EV,Total charging cost: withoutSmartCharging,Total charging cost: RR,Total charging cost: LLF,Total charging cost: MPC,Priority EV served (%): withoutSmartCharging,Priority EV served (%): RR,Priority EV served (%): LLF ,Priority EV served (%): MPC
+9,85,7,25,25.146,20.129,20.099,21.1,100,97,97,100
+9,95,7,25,27,20.129,20.129,21,100,97,97,100
+9,105,7,25,27,20.2,20.5,21,100,97,97,100
+12,95,10,36,23.584,20.594,22.244,20.843,100,95,94.5,100
+12,110,10,36,23.584,20.3,20.34,20.579,100,95,95,100
+12,120,10,36,23.584,20.4,20.4,20.7,100,95,95,100
