@@ -66,15 +66,19 @@ class AdaptiveChargingOptimization:
         """
         lb, ub = np.zeros(rates.shape), np.zeros(rates.shape)
         priority_sessions = [
-            "session_35",
-            "session_12",
-            "session_5",
-            "session_33",
             "session_14",
+            "session_10",
             "session_13",
-            "session_28",
-            "session_17",
-            "session_15",
+            "session_12",
+            "session_40",
+            "session_11",
+            "session_29",
+            "session_37",
+            "session_41",
+            "session_4",
+            "session_5",
+            "session_9",
+            "session_35",
         ]
         for session in active_sessions:
             i = evse_index.index(session.station_id)
@@ -148,21 +152,25 @@ class AdaptiveChargingOptimization:
                     planned_energy == session.remaining_demand
                 )
             elif session.session_id in [
-                "session_35",
-                "session_12",
-                "session_5",
-                "session_33",
                 "session_14",
+                "session_10",
                 "session_13",
-                "session_28",
-                "session_17",
-                "session_15",
+                "session_12",
+                "session_40",
+                "session_11",
+                "session_29",
+                "session_37",
+                "session_41",
+                "session_4",
+                "session_5",
+                "session_9",
+                "session_35",
             ]:
                 constraints[constraint_name] = (
                     planned_energy
                     >= session.remaining_demand
                     # planned_energy
-                    # <= session.remaining_demand * 0.98
+                    # <= session.remaining_demand * 1.01
                 )
             else:
                 constraints[constraint_name] = (

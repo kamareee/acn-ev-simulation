@@ -78,17 +78,17 @@ class Simulator(BaseSimObj):
         self.peak = 0
         self.ev_history = {}
         self.event_history = []
-        self.high_priority_ev_sessions = [
-            "session_1",
-            "session_14",
-            "session_33",
-            "session_12",
-            "session_8",
-            "session_9",
-            "session_24",
-            "session_23",
-            "session_34",
-        ]  # Added to keep track of high priority EVs
+        # self.high_priority_ev_sessions = [
+        #     "session_1",
+        #     "session_14",
+        #     "session_33",
+        #     "session_12",
+        #     "session_8",
+        #     "session_9",
+        #     "session_24",
+        #     "session_23",
+        #     "session_34",
+        # ]
         if store_schedule_history:
             self.schedule_history = {}
         else:
@@ -279,8 +279,8 @@ class Simulator(BaseSimObj):
             elif event.event_type == "Unplug":
                 self._print("Unplug Event...")
                 self.network.unplug(event.ev.station_id, event.ev.session_id)
-                if event.ev.session_id in self.high_priority_ev_sessions:
-                    self.high_priority_ev_sessions.remove(event.ev.session_id)
+                # if event.ev.session_id in self.high_priority_ev_sessions:
+                #     self.high_priority_ev_sessions.remove(event.ev.session_id)
                 # print(
                 #     f"High priority EV charging sessions after: {self.high_priority_ev_sessions}"
                 # )
