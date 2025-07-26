@@ -66,19 +66,19 @@ class AdaptiveChargingOptimization:
         """
         lb, ub = np.zeros(rates.shape), np.zeros(rates.shape)
         priority_sessions = [
-            "session_14",
-            "session_10",
             "session_13",
-            "session_12",
-            "session_40",
-            "session_11",
-            "session_29",
-            "session_37",
-            "session_41",
-            "session_4",
-            "session_5",
-            "session_9",
+            "session_10",
+            "session_31",
+            "session_24",
+            "session_33",
             "session_35",
+            "session_4",
+            "session_0",
+            "session_35",
+            # "session_29",
+            # "session_31",
+            # "session_40",
+            # "session_43",
         ]
         for session in active_sessions:
             i = evse_index.index(session.station_id)
@@ -89,7 +89,7 @@ class AdaptiveChargingOptimization:
             if session.session_id in priority_sessions:
                 # Set a higher minimum charging rate for priority sessions
                 lb[i, session_slice] = np.maximum(
-                    session.min_rates, 8
+                    session.min_rates, 11
                 )  # Example: minimum 6A for priority EVs
             else:
                 lb[i, session_slice] = session.min_rates
@@ -152,19 +152,19 @@ class AdaptiveChargingOptimization:
                     planned_energy == session.remaining_demand
                 )
             elif session.session_id in [
-                "session_14",
-                "session_10",
                 "session_13",
-                "session_12",
-                "session_40",
-                "session_11",
-                "session_29",
-                "session_37",
-                "session_41",
-                "session_4",
-                "session_5",
-                "session_9",
+                "session_10",
+                "session_31",
+                "session_24",
+                "session_33",
                 "session_35",
+                "session_4",
+                "session_0",
+                "session_35",
+                # "session_29",
+                # "session_31",
+                # "session_40",
+                # "session_43",
             ]:
                 constraints[constraint_name] = (
                     planned_energy

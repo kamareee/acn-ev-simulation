@@ -99,6 +99,34 @@ def proportion_of_priority_evs_energy_delivered(sim, priority_sessions: List[str
         return total_delivered_to_priority_evs / total_requested_by_priority_evs * 100
 
 
+# Energy delivered to non-priority EVs
+def proportion_of_non_priority_evs_energy_delivered(sim, priority_sessions: List[str]):
+    """Calculate the percentage of total energy delivered over total energy requested for non-priority evs.
+
+    Args:
+        sim (Simulator): A Simulator object which has been run.
+        priority_sessions (List[str]): List of session IDs for priority EVs.
+
+    Returns:
+        float: Proportion of total energy requested which was delivered during the simulation.
+    """
+    if len(priority_sessions) == 0:
+        raise ValueError("priority_sessions list cannot be empty.")
+    total_requested_by_non_priority_evs = sum(
+        ev.requested_energy
+        for ev in sim.ev_history.values()
+        if ev._session_id not in priority_sessions
+    )
+    total_delivered_to_non_priority_evs = sum(
+        ev.energy_delivered
+        for ev in sim.ev_history.values()
+        if ev._session_id not in priority_sessions
+    )
+    return (
+        total_delivered_to_non_priority_evs / total_requested_by_non_priority_evs * 100
+    )
+
+
 def total_energy_delivered(sim):
     """Calculate total energy delivered in kWh.
 
@@ -123,6 +151,90 @@ def total_energy_requested(sim):
     """
     total_requested = sum(ev.requested_energy for ev in sim.ev_history.values())
     return total_requested
+
+
+# Total energy delivered to priority EVs
+def total_energy_delivered_to_priority_evs(sim, priority_sessions: List[str]):
+    """Calculate total energy delivered to priority EVs in kWh.
+
+    Args:
+        sim (Simulator): A Simulator object which has been run.
+        priority_sessions (List[str]): List of session IDs for priority EVs.
+
+    Returns:
+        float: Total energy delivered to priority EVs during the simulation [kWh]
+    """
+    if len(priority_sessions) == 0:
+        return 0
+    total_delivered_to_priority_evs = sum(
+        ev.energy_delivered
+        for ev in sim.ev_history.values()
+        if ev._session_id in priority_sessions
+    )
+    return total_delivered_to_priority_evs
+
+
+# Total energy requested by priority EVs
+def total_energy_requested_by_priority_evs(sim, priority_sessions: List[str]):
+    """Calculate total energy requested by priority EVs in kWh.
+
+    Args:
+        sim (Simulator): A Simulator object which has been run.
+        priority_sessions (List[str]): List of session IDs for priority EVs.
+
+    Returns:
+        float: Total energy requested by priority EVs during the simulation [kWh]
+    """
+    if len(priority_sessions) == 0:
+        return 0
+    total_requested_by_priority_evs = sum(
+        ev.requested_energy
+        for ev in sim.ev_history.values()
+        if ev._session_id in priority_sessions
+    )
+    return total_requested_by_priority_evs
+
+
+# Total energy delivered to non-priority EVs
+def total_energy_delivered_to_non_priority_evs(sim, priority_sessions: List[str]):
+    """Calculate total energy delivered to non-priority EVs in kWh.
+
+    Args:
+        sim (Simulator): A Simulator object which has been run.
+        priority_sessions (List[str]): List of session IDs for priority EVs.
+
+    Returns:
+        float: Total energy delivered to non-priority EVs during the simulation [kWh]
+    """
+    if len(priority_sessions) == 0:
+        raise ValueError("priority_sessions list cannot be empty.")
+    total_delivered_to_non_priority_evs = sum(
+        ev.energy_delivered
+        for ev in sim.ev_history.values()
+        if ev._session_id not in priority_sessions
+    )
+    return total_delivered_to_non_priority_evs
+
+
+# Total energy requested by non-priority EVs
+def total_energy_requested_by_non_priority_evs(sim, priority_sessions: List[str]):
+    """Calculate total energy requested by non-priority EVs in kWh.
+
+    Args:
+        sim (Simulator): A Simulator object which has been run.
+        priority_sessions (List[str]): List of session IDs for priority EVs.
+
+    Returns:
+        float: Total energy requested by non-priority EVs during the simulation [kWh]
+    """
+    if len(priority_sessions) == 0:
+        raise ValueError("priority_sessions list cannot be empty.")
+    total_requested_by_non_priority_evs = sum(
+        ev.requested_energy
+        for ev in sim.ev_history.values()
+        if ev._session_id not in priority_sessions
+    )
+    return total_requested_by_non_priority_evs
 
 
 def proportion_of_demands_met(sim, threshold=1):
