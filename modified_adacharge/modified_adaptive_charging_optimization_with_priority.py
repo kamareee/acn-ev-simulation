@@ -1,14 +1,56 @@
-from typing import List, Union, Optional
+"""
+Modified Adaptive Charging Optimization with Automated Priority Selection
+==========================================================================
+
+This is a drop-in replacement for modified_adaptive_charging_optimization.py
+that integrates the PrioritySessionManager for automated priority EV handling.
+
+Changes from original:
+1. Added priority_sessions parameter to __init__
+2. Modified charging_rate_bounds() to use PrioritySessionManager
+3. Modified energy_constraints() to use PrioritySessionManager
+4. Added methods for dynamic priority updates
+
+Usage:
+    from priority_ev_automation import PrioritySelector, PriorityConfig
+    
+    # Generate sessions and select priorities
+    selector = PrioritySelector(PriorityConfig(max_priority_pct=0.27))
+    priority_ids = selector.select_from_sessions(sessions)
+    
+    # Create optimizer with priorities
+    optimizer = AdaptiveChargingOptimizationWithPriority(
+        objective=objective,
+        interface=interface,
+        priority_sessions=priority_ids
+    )
+
+Author: Research Team
+"""
+
+from typing import List, Union, Optional, Set
 from collections import namedtuple
 import numpy as np
 import cvxpy as cp
 
-# from acnportal.acnsim.interface import Interface, SessionInfo, InfrastructureInfo
+# Import from your existing modified_adacharge
 from modified_adacharge.modified_interface import (
     Interface,
     SessionInfo,
     InfrastructureInfo,
 )
+
+# Import priority automation (should be in same package or PYTHONPATH)
+try:
+    from .priority_ev_automation import (
+        PrioritySessionManager,
+        PrioritySelector,
+        PriorityConfig
+    )
+    PRIORITY_AUTOMATION_AVAILABLE = True
+except ImportError:
+    PRIORITY_AUTOMATION_AVAILABLE = False
+    print("Warning: priority_ev_automation not found. Priority features disabled.")
 
 
 class InfeasibilityException(Exception):
@@ -21,8 +63,12 @@ ObjectiveComponent = namedtuple(
 ObjectiveComponent.__new__.__defaults__ = (1, {})
 
 
-class AdaptiveChargingOptimization:
-    """Base class for all MPC based charging algorithms.
+class AdaptiveChargingOptimizationWithPriority:
+    """
+    MPC-based charging algorithm with automated priority EV handling.
+    
+    This class extends the original AdaptiveChargingOptimization with
+    integrated priority selection and management.
 
     Args:
         objective (List[ObjectiveComponent]): List of components which make up the optimization objective.
@@ -32,27 +78,105 @@ class AdaptiveChargingOptimization:
         enforce_energy_equality (bool): If True, energy delivered must be equal to energy requested for each EV.
             If False, energy delivered must be less than or equal to request.
         solver (str): Backend solver to use. See CVXPY for available solvers.
+        priority_sessions (Set[str]): Set of session IDs that should be treated as priority.
+            If None, no sessions are prioritized (unless auto_select_priority=True).
+        priority_config (PriorityConfig): Configuration for priority selection rules.
+        auto_select_priority (bool): If True, automatically select priority sessions
+            based on session characteristics.
     """
 
     def __init__(
         self,
         objective: List[ObjectiveComponent],
         interface: Interface,
-        constraint_type="SOC",
-        enforce_energy_equality=False,
-        solver="ECOS",
+        constraint_type: str = "SOC",
+        enforce_energy_equality: bool = False,
+        solver: str = "ECOS",
+        priority_sessions: Optional[Set[str]] = None,
+        priority_config: Optional['PriorityConfig'] = None,
+        auto_select_priority: bool = False,
     ):
         self.interface = interface
         self.constraint_type = constraint_type
         self.enforce_energy_equality = enforce_energy_equality
         self.solver = solver
         self.objective_configuration = objective
+        
+        # Initialize priority management
+        self.auto_select_priority = auto_select_priority
+        
+        if PRIORITY_AUTOMATION_AVAILABLE:
+            self.priority_config = priority_config or PriorityConfig()
+            self.priority_manager = PrioritySessionManager(
+                priority_sessions=priority_sessions,
+                config=self.priority_config
+            )
+            self.priority_selector = PrioritySelector(self.priority_config)
+        else:
+            self.priority_manager = None
+            self.priority_selector = None
+            if priority_sessions:
+                # Fallback: store as simple set
+                self._priority_sessions = priority_sessions
+            else:
+                self._priority_sessions = set()
+    
+    def _is_priority(self, session_id: str) -> bool:
+        """Check if a session is priority."""
+        if self.priority_manager:
+            return self.priority_manager.is_priority(session_id)
+        return session_id in self._priority_sessions
+    
+    def _get_priority_min_rate(self) -> float:
+        """Get minimum charging rate for priority sessions."""
+        if self.priority_manager:
+            return self.priority_manager._config.min_charging_rate_priority
+        return 11.0  # Default fallback
+    
+    def set_priority_sessions(self, priority_sessions: Set[str]):
+        """Update the set of priority sessions."""
+        if self.priority_manager:
+            self.priority_manager.priority_sessions = priority_sessions
+        else:
+            self._priority_sessions = priority_sessions
+    
+    def get_priority_sessions(self) -> Set[str]:
+        """Get current priority session IDs."""
+        if self.priority_manager:
+            return self.priority_manager.priority_sessions
+        return self._priority_sessions.copy()
+    
+    def auto_update_priorities(self, total_periods: int = 288):
+        """
+        Automatically update priority sessions based on current active sessions.
+        
+        Call this at the start of each optimization cycle if auto_select_priority=True.
+        """
+        if not self.auto_select_priority or not self.priority_selector:
+            return
+        
+        active_sessions = self.interface.active_sessions()
+        if not active_sessions:
+            return
+        
+        new_priorities = self.priority_selector.select_from_sessions(
+            active_sessions, total_periods
+        )
+        
+        if self.priority_manager:
+            self.priority_manager.priority_sessions = new_priorities
+        else:
+            self._priority_sessions = new_priorities
 
-    @staticmethod
     def charging_rate_bounds(
-        rates: cp.Variable, active_sessions: List[SessionInfo], evse_index: List[str]
+        self, 
+        rates: cp.Variable, 
+        active_sessions: List[SessionInfo], 
+        evse_index: List[str]
     ):
         """Get upper and lower bound constraints for each charging rate.
+        
+        Priority sessions receive a higher minimum charging rate.
 
         Args:
             rates (cp.Variable): cvxpy variable representing all charging rates. Shape should be (N, T) where N is the
@@ -62,56 +186,47 @@ class AdaptiveChargingOptimization:
                 EVSE in rates.
 
         Returns:
-            List[cp.Constraint]: List of lower bound constraint, upper bound constraint.
+            Dict[str, cp.Constraint]: Dictionary of lower bound constraint, upper bound constraint.
         """
         lb, ub = np.zeros(rates.shape), np.zeros(rates.shape)
-        priority_sessions = [
-            "session_36",
-            "session_40",
-            "session_30",
-            "session_29",
-        ]
+        priority_min_rate = self._get_priority_min_rate()
+        
         for session in active_sessions:
             i = evse_index.index(session.station_id)
             session_slice = slice(
-                session.arrival_offset, session.arrival_offset + session.remaining_time
+                session.arrival_offset, 
+                session.arrival_offset + session.remaining_time
             )
 
-            if session.session_id in priority_sessions:
+            if self._is_priority(session.session_id):
                 # Set a higher minimum charging rate for priority sessions
-                lb[i, session_slice] = np.maximum(
-                    session.min_rates, 11
-                )  # Example: minimum 6A for priority EVs
+                # session.min_rates is a numpy array of length remaining_time
+                lb[i, session_slice] = np.maximum(session.min_rates, priority_min_rate)
             else:
                 lb[i, session_slice] = session.min_rates
 
             ub[i, session_slice] = session.max_rates
-            # lb[
-            #     i,
-            #     session.arrival_offset : session.arrival_offset
-            #     + session.remaining_time,
-            # ] = session.min_rates
-            # ub[
-            #     i,
-            #     session.arrival_offset : session.arrival_offset
-            #     + session.remaining_time,
-            # ] = session.max_rates
+        
         # To ensure feasibility, replace upper bound with lower bound when they conflict
         ub[ub < lb] = lb[ub < lb]
+        
         return {
             "charging_rate_bounds.lb": rates >= lb,
             "charging_rate_bounds.ub": rates <= ub,
         }
 
-    @staticmethod
     def energy_constraints(
+        self,
         rates: cp.Variable,
         active_sessions: List[SessionInfo],
         infrastructure: InfrastructureInfo,
-        period,
-        enforce_energy_equality=False,
+        period: int,
+        enforce_energy_equality: bool = False,
     ):
         """Get constraints on the energy delivered for each session.
+        
+        Priority sessions get >= constraint (must deliver at least requested).
+        Non-priority sessions get <= constraint (can deliver less).
 
         Args:
             rates (cp.Variable): cvxpy variable representing all charging rates. Shape should be (N, T) where N is the
@@ -124,40 +239,36 @@ class AdaptiveChargingOptimization:
                 If False, energy delivered must be less than or equal to request.
 
         Returns:
-            List[cp.Constraint]: List of energy delivered constraints for each session.
+            Dict[str, cp.Constraint]: Dictionary of energy delivered constraints for each session.
         """
         constraints = {}
+        
         for session in active_sessions:
             i = infrastructure.get_station_index(session.station_id)
             planned_energy = cp.sum(
                 rates[
                     i,
-                    session.arrival_offset : session.arrival_offset
-                    + session.remaining_time,
+                    session.arrival_offset : session.arrival_offset + session.remaining_time,
                 ]
             )
             planned_energy *= infrastructure.voltages[i] * period / 1e3 / 60
             constraint_name = f"energy_constraints.{session.session_id}"
+            
             if enforce_energy_equality:
                 constraints[constraint_name] = (
                     planned_energy == session.remaining_demand
                 )
-            elif session.session_id in [
-                "session_36",
-                "session_40",
-                "session_30",
-                "session_29",
-            ]:
+            elif self._is_priority(session.session_id):
+                # Priority sessions must receive at least their requested energy
                 constraints[constraint_name] = (
-                    planned_energy
-                    >= session.remaining_demand
-                    # planned_energy
-                    # <= session.remaining_demand * 1.01
+                    planned_energy >= session.remaining_demand
                 )
             else:
+                # Non-priority sessions can receive less
                 constraints[constraint_name] = (
                     planned_energy <= session.remaining_demand
                 )
+        
         return constraints
 
     @staticmethod
@@ -175,15 +286,15 @@ class AdaptiveChargingOptimization:
                 Cone or 'LINEAR' for linearized constraints.
 
         Returns:
-            List[cp.Constraint]: List of constraints, one for each bottleneck in the electrical infrastructure.
+            Dict[str, cp.Constraint]: Dictionary of constraints, one for each bottleneck in the electrical infrastructure.
         """
-        # If constraint_matrix is empty, no need to add infrastructure
-        # constraints.
+        # If constraint_matrix is empty, no need to add infrastructure constraints.
         if (
             infrastructure.constraint_matrix is None
             or infrastructure.constraint_matrix.shape == (0, 0)
         ):
             return {}
+        
         constraints = {}
         if constraint_type == "SOC":
             if infrastructure.phases is None:
@@ -194,7 +305,7 @@ class AdaptiveChargingOptimization:
             for j, v in enumerate(infrastructure.constraint_matrix):
                 a = np.stack([v * np.cos(phase_in_rad), v * np.sin(phase_in_rad)])
                 constraint_name = (
-                    f"infrastructure_constraints." f"{infrastructure.constraint_ids[j]}"
+                    f"infrastructure_constraints.{infrastructure.constraint_ids[j]}"
                 )
                 constraints[constraint_name] = (
                     cp.norm(a @ rates, axis=0) <= infrastructure.constraint_limits[j]
@@ -209,9 +320,7 @@ class AdaptiveChargingOptimization:
                 )
         else:
             raise ValueError(
-                "Invalid infrastructure constraint type: {0}. Valid options are SOC or AFFINE.".format(
-                    constraint_type
-                )
+                f"Invalid infrastructure constraint type: {constraint_type}. Valid options are SOC or LINEAR."
             )
         return constraints
 
@@ -228,7 +337,7 @@ class AdaptiveChargingOptimization:
                 enforced.
 
         Returns:
-            List[cp.Constraint]: List of constraints, one for each bottleneck in the electrical infrastructure.
+            Dict[str, cp.Constraint]: Dictionary of constraints.
         """
         if peak_limit is not None:
             return {"peak_constraint": cp.sum(rates, axis=0) <= peak_limit}
@@ -238,7 +347,7 @@ class AdaptiveChargingOptimization:
         self, rates: cp.Variable, infrastructure: InfrastructureInfo, **kwargs
     ):
         def _merge_dicts(*args):
-            """Merge two dictionaries where d2 override d1 when there is a conflict."""
+            """Merge dictionaries where later dicts override earlier ones."""
             merged = dict()
             for d in args:
                 merged.update(d)
@@ -274,7 +383,7 @@ class AdaptiveChargingOptimization:
         Returns:
             Dict[str: object]:
                 'objective' : cvxpy expression for the objective of the optimization problem
-                'constraints': list of all constraints for the optimization problem
+                'constraints': dict of all constraints for the optimization problem
                 'variables': dict mapping variable name to cvxpy Variable.
         """
         optimization_horizon = max(
@@ -284,14 +393,14 @@ class AdaptiveChargingOptimization:
         rates = cp.Variable(shape=(num_evses, optimization_horizon))
         constraints = {}
 
-        # Rate constraints
+        # Rate constraints (uses priority logic)
         constraints.update(
             self.charging_rate_bounds(
                 rates, active_sessions, infrastructure.station_ids
             )
         )
 
-        # Energy Delivered Constraints
+        # Energy Delivered Constraints (uses priority logic)
         constraints.update(
             self.energy_constraints(
                 rates,
@@ -311,12 +420,10 @@ class AdaptiveChargingOptimization:
         constraints.update(self.peak_constraint(rates, peak_limit))
 
         # Objective Function
-        # objective = cp.Maximize(
-        #     self.build_objective(rates, infrastructure, prev_peak=prev_peak)
-        # )
         objective = cp.Minimize(
             self.build_objective(rates, infrastructure, prev_peak=prev_peak)
         )
+        
         return {
             "objective": objective,
             "constraints": constraints,
@@ -328,7 +435,7 @@ class AdaptiveChargingOptimization:
         active_sessions: List[SessionInfo],
         infrastructure: InfrastructureInfo,
         peak_limit: Union[float, List[float], np.ndarray] = None,
-        prev_peak=0,
+        prev_peak: float = 0,
         verbose: bool = False,
     ):
         """Solve optimization problem to create a schedule of charging rates.
@@ -346,9 +453,13 @@ class AdaptiveChargingOptimization:
                 T is the length of the optimization horizon. Rows are ordered according to the order of evse_index in
                 infrastructure.
         """
-        # Here we take in arguments which describe the problem and build a problem instance.
+        # Auto-update priorities if enabled
+        if self.auto_select_priority:
+            self.auto_update_priorities()
+        
         if len(active_sessions) == 0:
             return np.zeros((infrastructure.num_stations, 1))
+        
         problem_dict = self.build_problem(
             active_sessions, infrastructure, peak_limit, prev_peak
         )
@@ -356,236 +467,53 @@ class AdaptiveChargingOptimization:
             problem_dict["objective"], list(problem_dict["constraints"].values())
         )
         prob.solve(solver=self.solver, verbose=verbose)
+        
         if prob.status not in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
             raise InfeasibilityException(f"Solve failed with status {prob.status}")
+        
         return problem_dict["variables"]["rates"].value
 
 
-# ---------------------------------------------------------------------------------
-#  Objective Functions
-#
-#
-#  All objectives should take rates as their first positional argument.
-#  All other arguments should be passed as keyword arguments.
-#  All functions should except **kwargs as their last argument to avoid errors
-#  when unknown arguments are passed.
-#
-# ---------------------------------------------------------------------------------
+# =============================================================================
+# Backward Compatibility Alias
+# =============================================================================
+
+# For backward compatibility, you can use this as a drop-in replacement
+AdaptiveChargingOptimization = AdaptiveChargingOptimizationWithPriority
 
 
-def charging_power(rates, infrastructure, **kwargs):
-    """Returns a matrix with the same shape as rates but with units kW instead of A."""
-    voltage_matrix = np.tile(infrastructure.voltages, (rates.shape[1], 1)).T
-    return cp.multiply(rates, voltage_matrix) / 1e3
+# =============================================================================
+# Helper function for migration from hardcoded lists
+# =============================================================================
 
-
-def aggregate_power(rates, infrastructure, **kwargs):
-    """Returns aggregate charging power for each time period."""
-    return cp.sum(charging_power(rates, infrastructure=infrastructure), axis=0)
-
-
-def get_period_energy(rates, infrastructure, period, **kwargs):
-    """Return energy delivered in kWh during each time period and each session."""
-    power = charging_power(rates, infrastructure=infrastructure)
-    period_in_hours = period / 60
-    return power * period_in_hours
-
-
-def aggregate_period_energy(rates, infrastructure, interface, **kwargs):
-    """Returns the aggregate energy delivered in kWh during each time period."""
-    # get charging rates in kWh per period
-    energy_per_period = get_period_energy(
-        rates, infrastructure=infrastructure, period=interface.period
-    )
-    return cp.sum(energy_per_period, axis=0)
-
-
-def quick_charge(rates, infrastructure, interface, **kwargs):
-    optimization_horizon = rates.shape[1]
-    c = np.array(
-        [
-            (optimization_horizon - t) / optimization_horizon
-            for t in range(optimization_horizon)
-        ]
-    )
-    return c @ cp.sum(rates, axis=0)
-
-
-def equal_share(rates, infrastructure, interface, **kwargs):
-    return -cp.sum_squares(rates)
-
-
-def tou_energy_cost(rates, infrastructure, interface, **kwargs):
-    current_prices = interface.get_prices(rates.shape[1])  # $/kWh
-    return -current_prices @ aggregate_period_energy(rates, infrastructure, interface)
-
-
-def total_energy(rates, infrastructure, interface, **kwargs):
-    return cp.sum(get_period_energy(rates, infrastructure, interface.period))
-
-
-def peak(rates, infrastructure, interface, baseline_peak=0, **kwargs):
-    agg_power = aggregate_power(rates, infrastructure)
-    max_power = cp.max(agg_power)
-    prev_peak = interface.get_prev_peak() * infrastructure.voltages[0] / 1000
-    if baseline_peak > 0:
-        return cp.maximum(max_power, baseline_peak, prev_peak)
-    else:
-        return cp.maximum(max_power, prev_peak)
-
-
-def demand_charge(rates, infrastructure, interface, baseline_peak=0, **kwargs):
-    p = peak(rates, infrastructure, interface, baseline_peak, **kwargs)
-    dc = interface.get_demand_charge()
-    return -dc * p
-
-
-def load_flattening(rates, infrastructure, interface, external_signal=None, **kwargs):
-    if external_signal is None:
-        external_signal = np.zeros(rates.shape[1])
-    aggregate_rates_kW = aggregate_power(rates, infrastructure)
-    total_aggregate = aggregate_rates_kW + external_signal
-    return -cp.sum_squares(total_aggregate)
-
-
-def tou_energy_cost_with_pv(rates, infrastructure, interface, **kwargs):
-    current_prices = interface.get_prices(rates.shape[1])  # $/kWh
-    if interface.current_datetime.hour > 8 and interface.current_datetime.hour < 16:
-        pv_power = np.array([20 for i in range(rates.shape[1])])
-    else:
-        pv_power = np.array([5 for i in range(rates.shape[1])])
-    # return current_prices @ (
-    #     aggregate_period_energy(rates, infrastructure, interface) - pv_power
-    # )
-
-    total_energy = aggregate_period_energy(rates, infrastructure, interface)
-
-    # Calculate grid energy
-    grid_energy = cp.maximum(total_energy - pv_power, 0)
-    return current_prices @ grid_energy
-
-
-def non_completion_penalty(rates, infrastructure, interface, **kwargs):
-    session_requested_energy = np.array(
-        [session.remaining_demand for session in interface.active_sessions()]
-    )
-    requested_energy = cp.sum(session_requested_energy)
-    # return -cp.norm(
-    #     aggregate_period_energy(rates, infrastructure, interface) - requested_energy,
-    #     p=1,
-    return cp.norm(
-        aggregate_period_energy(rates, infrastructure, interface) - requested_energy,
-        p=1,
-    )
-
-
-# This function is for non completion penalty with priority ev charging sessions
-def non_completion_penalty_for_priority_ev(rates, infrastructure, interface, **kwargs):
-    priority_sessions = [
-        session
-        for session in interface.active_sessions()
-        if session.session_id
-        in [
-            "session_22",
-            "session_5",
-            "session_24",
-            "session_7",
-            "session_2",
-            "session_13",
-        ]
-    ]
-
-    if not priority_sessions:
-        return cp.Constant(
-            np.random.uniform(0, 0.001)
-        )  # No penalty if no priority sessions
-
-    priority_requested_energy = np.array(
-        [session.remaining_demand for session in priority_sessions]
-    )
-    total_priority_requested_energy = cp.sum(priority_requested_energy)
-
-    # Calculate energy delivered to priority sessions
-    priority_indices = [
-        infrastructure.get_station_index(session.station_id)
-        for session in priority_sessions
-    ]
-    priority_rates = rates[priority_indices, :]
-
-    # Calculate energy delivered to priority sessions
-    priority_voltages = infrastructure.voltages[priority_indices]
-    priority_power = cp.multiply(priority_rates, priority_voltages[:, np.newaxis]) / 1e3
-    period_in_hours = interface.period / 60
-    priority_delivered_energy = cp.sum(priority_power * period_in_hours)
-
-    # return cp.norm(priority_delivered_energy - total_priority_requested_energy, p=1)
-    return cp.norm2(priority_delivered_energy - total_priority_requested_energy)
-
-
-def non_completion_penalty_without_priority_ev(
-    rates, infrastructure, interface, **kwargs
-):
-    non_priority_sessions = [
-        session
-        for session in interface.active_sessions()
-        if session.session_id
-        not in [
-            "session_2",
-            "session_4",
-            "session_10",
-            "session_12",
-            "session_16",
-            "session_19",
-            "session_20",
-        ]
-    ]
-
-    if not non_priority_sessions:
-        return cp.Constant(np.random.uniform(0, 0.001))
-
-    non_priority_session_requested_energy = np.array(
-        [session.remaining_demand for session in non_priority_sessions]
-    )
-    total_non_priority_requested_energy = cp.sum(non_priority_session_requested_energy)
-    non_priority_indices = [
-        infrastructure.get_station_index(session.station_id)
-        for session in non_priority_sessions
-    ]
-
-    non_priority_rates = rates[non_priority_indices, :]
-
-    # Calculate energy delivered to priority sessions
-    non_priority_voltages = infrastructure.voltages[non_priority_indices]
-    non_priority_power = (
-        cp.multiply(non_priority_rates, non_priority_voltages[:, np.newaxis]) / 1e3
-    )
-    period_in_hours = interface.period / 60
-    non_priority_sessions_delivered_energy = cp.sum(
-        non_priority_power * period_in_hours
-    )
-
-    return cp.norm(
-        non_priority_sessions_delivered_energy - total_non_priority_requested_energy,
-        p=1,
-    )
-
-
-# def tou_energy_cost_with_pv(rates, infrastructure, interface, **kwargs):
-#     current_prices = interface.get_prices(rates.shape[1])  # $/kWh
-#     all_pv_power = [5, 8, 11]
-#     session_pv_power = []
-#     for i in range(rates.shape[1]):
-#         session_pv_power.extend(all_pv_power)
-#     # pv_power = np.array([i for i in range(rates.shape[1])])
-#     pv_power = np.array(session_pv_power[0 : rates.shape[1]])
-#     return -current_prices @ (
-#         aggregate_period_energy(rates, infrastructure, interface) - pv_power
-#     )
-
-
-# def smoothing(rates, active_sessions, infrastructure, previous_rates, normp=1, *args, **kwargs):
-#     reg = -cp.norm(cp.diff(rates, axis=1), p=normp)
-#     prev_mask = np.logical_not(np.isnan(previous_rates))
-#     if np.any(prev_mask):
-#         reg -= cp.norm(rates[0, prev_mask] - previous_rates[prev_mask], p=normp)
-#     return reg
+def migrate_from_hardcoded_priority(
+    hardcoded_rate_bounds: List[str],
+    hardcoded_energy_constraints: List[str]
+) -> Set[str]:
+    """
+    Helper to migrate from hardcoded priority lists to unified set.
+    
+    Usage:
+        # Your old hardcoded lists
+        rate_bounds_priority = ["session_15", "session_12", "session_36", ...]
+        energy_constraints_priority = ["session_13", "session_10", "session_31", ...]
+        
+        # Merge them
+        priority_sessions = migrate_from_hardcoded_priority(
+            rate_bounds_priority, 
+            energy_constraints_priority
+        )
+    """
+    # Union of both lists - assuming they should be the same
+    combined = set(hardcoded_rate_bounds) | set(hardcoded_energy_constraints)
+    
+    # Warn if they were different
+    if set(hardcoded_rate_bounds) != set(hardcoded_energy_constraints):
+        rate_only = set(hardcoded_rate_bounds) - set(hardcoded_energy_constraints)
+        energy_only = set(hardcoded_energy_constraints) - set(hardcoded_rate_bounds)
+        print(f"Warning: Priority lists were different!")
+        print(f"  In rate_bounds only: {rate_only}")
+        print(f"  In energy_constraints only: {energy_only}")
+        print(f"  Combined: {combined}")
+    
+    return combined
