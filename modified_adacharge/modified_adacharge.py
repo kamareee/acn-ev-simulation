@@ -1,8 +1,13 @@
 from acnportal.algorithms import BaseAlgorithm, least_laxity_first
 from copy import deepcopy
 import warnings
+from typing import Optional, Set
 
 from .modified_adaptive_charging_optimization import *
+from .modified_adaptive_charging_optimization_with_priority import (
+    AdaptiveChargingOptimizationWithPriority,
+)
+from .priority_ev_automation import PriorityConfig
 from acnportal.algorithms import (
     apply_upper_bound_estimate,
     apply_minimum_charging_rate,
@@ -155,6 +160,159 @@ class AdaptiveSchedulingAlgorithm(BaseAlgorithm):
             self.constraint_type,
             self.enforce_energy_equality,
             solver=self.solver,
+        )
+
+        if self.peak_limit is None or np.isscalar(self.peak_limit):
+            trimmed_peak = self.peak_limit
+        else:
+            t = self.interface.current_time
+            optimization_horizon = max(
+                s.arrival_offset + s.remaining_time for s in active_sessions
+            )
+            trimmed_peak = self.peak_limit[t : t + optimization_horizon]
+
+        rates_matrix = optimizer.solve(
+            active_sessions,
+            infrastructure,
+            peak_limit=trimmed_peak,
+            prev_peak=self.interface.get_prev_peak(),
+            verbose=self.verbose,
+        )
+        if self.quantize:
+            if self.reallocate:
+                rates_matrix = diff_based_reallocation(
+                    rates_matrix, active_sessions, infrastructure, self.interface
+                )
+            else:
+                rates_matrix = project_into_discrete_feasible_pilots(
+                    rates_matrix, infrastructure
+                )
+        else:
+            rates_matrix = project_into_continuous_feasible_pilots(
+                rates_matrix, infrastructure
+            )
+        rates_matrix = np.maximum(rates_matrix, 0)
+        return {
+            station_id: rates_matrix[i, :]
+            for i, station_id in enumerate(infrastructure.station_ids)
+        }
+
+
+class AdaptiveSchedulingAlgorithmWithPriority(BaseAlgorithm):
+    """Model Predictive Control based Adaptive Schedule Algorithm with Priority EV support.
+
+    This class extends AdaptiveSchedulingAlgorithm to support priority EV sessions
+    that receive preferential treatment during optimization.
+
+    Args:
+        objective (List[ObjectiveComponent]): List of ObjectiveComponents for the optimization.
+        priority_sessions (Set[str]): Set of session IDs that should be treated as priority.
+        priority_config (PriorityConfig): Configuration for priority handling.
+        constraint_type (str): String representing which constraint type to use.
+        enforce_energy_equality (bool): If True, energy delivered must be equal to energy requested.
+        solver (str): Backend solver to use.
+        peak_limit: Limit on aggregate peak current.
+        estimate_max_rate (bool): If True, estimate maximum charging rate.
+        max_rate_estimator: Estimator for maximum rate prediction.
+        uninterrupted_charging (bool): If True, enforce minimum charging rate.
+        quantize (bool): If True, quantize charging rates.
+        reallocate (bool): If True, reallocate unused capacity.
+        max_recompute (int): Maximum periods between recomputes.
+        allow_overcharging (bool): Allow slight overcharging.
+        verbose (bool): Enable verbose solver output.
+    """
+
+    def __init__(
+        self,
+        objective,
+        priority_sessions: Optional[Set[str]] = None,
+        priority_config: Optional[PriorityConfig] = None,
+        constraint_type="SOC",
+        enforce_energy_equality=False,
+        solver=None,
+        peak_limit=None,
+        estimate_max_rate=False,
+        max_rate_estimator=None,
+        uninterrupted_charging=False,
+        quantize=False,
+        reallocate=False,
+        max_recompute=None,
+        allow_overcharging=False,
+        verbose=False,
+    ):
+        super().__init__()
+        self.objective = objective
+        self.priority_sessions = priority_sessions or set()
+        self.priority_config = priority_config
+        self.constraint_type = constraint_type
+        self.enforce_energy_equality = enforce_energy_equality
+        self.solver = solver
+        self.peak_limit = peak_limit
+        self.estimate_max_rate = estimate_max_rate
+        self.max_rate_estimator = max_rate_estimator
+        self.uninterrupted_charging = uninterrupted_charging
+        self.quantize = quantize
+        self.reallocate = reallocate
+        self.verbose = verbose
+        if not self.quantize and self.reallocate:
+            raise ValueError(
+                "reallocate cannot be true without quantize. "
+                "Otherwise there is nothing to reallocate :)."
+            )
+        if self.quantize:
+            if self.max_recompute is not None:
+                warnings.warn(
+                    "Overriding max_recompute to 1 since quantization is on."
+                )
+            self.max_recompute = 1
+        else:
+            self.max_recompute = max_recompute
+        self.allow_overcharging = allow_overcharging
+
+    def set_priority_sessions(self, priority_sessions: Set[str]):
+        """Update the set of priority sessions."""
+        self.priority_sessions = priority_sessions
+
+    def add_priority_session(self, session_id: str):
+        """Add a session to the priority set."""
+        self.priority_sessions.add(session_id)
+
+    def remove_priority_session(self, session_id: str):
+        """Remove a session from the priority set."""
+        self.priority_sessions.discard(session_id)
+
+    def register_interface(self, interface):
+        """Register interface to the simulator/physical system."""
+        self._interface = interface
+        if self.max_rate_estimator is not None:
+            self.max_rate_estimator.register_interface(interface)
+
+    def schedule(self, active_sessions):
+        """See BaseAlgorithm"""
+        if len(active_sessions) == 0:
+            return {}
+        infrastructure = self.interface.infrastructure_info()
+
+        active_sessions = enforce_pilot_limit(active_sessions, infrastructure)
+
+        if self.estimate_max_rate:
+            active_sessions = apply_upper_bound_estimate(
+                self.max_rate_estimator, active_sessions
+            )
+        if self.uninterrupted_charging:
+            active_sessions = apply_minimum_charging_rate(
+                active_sessions, infrastructure, self.interface.period
+            )
+
+        # Use priority-aware optimizer
+        optimizer = AdaptiveChargingOptimizationWithPriority(
+            self.objective,
+            self.interface,
+            self.constraint_type,
+            self.enforce_energy_equality,
+            solver=self.solver,
+            priority_sessions=self.priority_sessions,
+            priority_config=self.priority_config,
         )
 
         if self.peak_limit is None or np.isscalar(self.peak_limit):

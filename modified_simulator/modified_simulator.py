@@ -1,6 +1,6 @@
 import copy
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Set, Optional, Any, List, Tuple
 
 import warnings
 import json
@@ -59,6 +59,8 @@ class Simulator(BaseSimObj):
         store_schedule_history=False,
         verbose=True,
         interface_type=Interface,
+        priority_sessions: Optional[Set[str]] = None,
+        auto_sync_priority: bool = True,
     ):
         self.network = network
         self.scheduler = scheduler
@@ -78,17 +80,11 @@ class Simulator(BaseSimObj):
         self.peak = 0
         self.ev_history = {}
         self.event_history = []
-        # self.high_priority_ev_sessions = [
-        #     "session_1",
-        #     "session_14",
-        #     "session_33",
-        #     "session_12",
-        #     "session_8",
-        #     "session_9",
-        #     "session_24",
-        #     "session_23",
-        #     "session_34",
-        # ]
+
+        # Priority session management
+        self._priority_sessions: Set[str] = priority_sessions if priority_sessions is not None else set()
+        self._auto_sync_priority = auto_sync_priority
+
         if store_schedule_history:
             self.schedule_history = {}
         else:
@@ -104,10 +100,95 @@ class Simulator(BaseSimObj):
         if scheduler is not None:
             self.max_recompute = scheduler.max_recompute
             self.scheduler.register_interface(interface_type(self))
+            # Sync priority sessions with scheduler if supported
+            if self._auto_sync_priority:
+                self._sync_priority_to_scheduler()
 
     @property
     def iteration(self):
         return self._iteration
+
+    # =========================================================================
+    # Priority Session Management
+    # =========================================================================
+
+    @property
+    def priority_sessions(self) -> Set[str]:
+        """Get the set of priority session IDs."""
+        return self._priority_sessions.copy()
+
+    @priority_sessions.setter
+    def priority_sessions(self, sessions: Set[str]):
+        """Set priority sessions and optionally sync with scheduler."""
+        self._priority_sessions = set(sessions)
+        if self._auto_sync_priority:
+            self._sync_priority_to_scheduler()
+
+    def _sync_priority_to_scheduler(self):
+        """Sync priority sessions with the scheduler if it supports priority."""
+        if hasattr(self.scheduler, "set_priority_sessions"):
+            self.scheduler.set_priority_sessions(self._priority_sessions)
+        elif hasattr(self.scheduler, "priority_sessions"):
+            self.scheduler.priority_sessions = self._priority_sessions
+
+    def add_priority_session(self, session_id: str):
+        """Add a session to the priority set."""
+        self._priority_sessions.add(session_id)
+        if self._auto_sync_priority:
+            self._sync_priority_to_scheduler()
+
+    def remove_priority_session(self, session_id: str):
+        """Remove a session from the priority set."""
+        self._priority_sessions.discard(session_id)
+        if self._auto_sync_priority:
+            self._sync_priority_to_scheduler()
+
+    def is_priority_session(self, session_id: str) -> bool:
+        """Check if a session is marked as priority."""
+        return session_id in self._priority_sessions
+
+    def get_active_priority_sessions(self) -> List[str]:
+        """Get list of currently active priority sessions."""
+        active_evs = self.get_active_evs()
+        return [
+            ev.session_id
+            for ev in active_evs
+            if ev.session_id in self._priority_sessions
+        ]
+
+    def get_priority_completion_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about priority session completion.
+
+        Returns:
+            Dictionary with priority session statistics.
+        """
+        priority_requested = 0.0
+        priority_delivered = 0.0
+        completed = 0
+        total = len(self._priority_sessions)
+
+        for session_id in self._priority_sessions:
+            if session_id in self.ev_history:
+                ev = self.ev_history[session_id]
+                priority_requested += ev.requested_energy
+                priority_delivered += ev.energy_delivered
+                if ev.energy_delivered >= ev.requested_energy * 0.99:
+                    completed += 1
+
+        completion_rate = (
+            (priority_delivered / priority_requested * 100)
+            if priority_requested > 0
+            else 0
+        )
+
+        return {
+            "total_priority": total,
+            "completed_priority": completed,
+            "priority_energy_requested_kwh": round(priority_requested, 2),
+            "priority_energy_delivered_kwh": round(priority_delivered, 2),
+            "priority_completion_rate_pct": round(completion_rate, 2),
+        }
 
     def run(self):
         """
@@ -292,9 +373,11 @@ class Simulator(BaseSimObj):
         except AttributeError as e:
             if len(event) == 2:
                 actual_event = event[0]  # for now assume this event is a Plugin Event
-                # Checking how many changring stations are available and unplugging an EV if none are available
-                # to plug in the incoming priority EV
-                if len(self.network.available_evses()) == 0:
+                is_priority_event = event[1]  # Second element indicates priority status
+
+                # If this is a priority EV and no stations available, preempt a non-priority EV
+                if is_priority_event and len(self.network.available_evses()) == 0:
+                    # Find non-priority EVs sorted by remaining demand (lowest first)
                     evs_remaining_demand = [
                         (
                             ev._session_id,
@@ -302,29 +385,39 @@ class Simulator(BaseSimObj):
                             ev.remaining_demand,
                         )
                         for ev in self.get_active_evs()
-                        if (ev._session_id not in self.high_priority_ev_sessions)
+                        if ev._session_id not in self._priority_sessions
                     ]
                     sorted_evs_with_remaining_demand = sorted(
                         evs_remaining_demand, key=lambda i: i[2]
                     )
-                    print("Unplugging an EV as all EVSEs are occupied")
-                    ev_to_unplug = sorted_evs_with_remaining_demand[0]
-                    ev_to_unplug_session_id = ev_to_unplug[0]
-                    ev_to_unplug_station_id = ev_to_unplug[1]
-                    self.network.unplug(
-                        ev_to_unplug_station_id, ev_to_unplug_session_id
-                    )
-                    print(
-                        f"Unplugged EV {ev_to_unplug_session_id} from station {ev_to_unplug_station_id} to plug-in high priority EV {actual_event.ev.session_id}"
-                    )
-                    self.network.plugin(actual_event.ev)
-                    self.ev_history[actual_event.ev.session_id] = actual_event.ev
-                    self.high_priority_ev_sessions.append(actual_event.ev.session_id)
-                    self.event_queue.add_event(
-                        UnplugEvent(actual_event.ev.departure, actual_event.ev)
-                    )
-                    self._resolve = True
-                    self._last_schedule_update = actual_event.timestamp
+
+                    if sorted_evs_with_remaining_demand:
+                        self._print("Unplugging an EV as all EVSEs are occupied for priority EV")
+                        ev_to_unplug = sorted_evs_with_remaining_demand[0]
+                        ev_to_unplug_session_id = ev_to_unplug[0]
+                        ev_to_unplug_station_id = ev_to_unplug[1]
+                        self.network.unplug(
+                            ev_to_unplug_station_id, ev_to_unplug_session_id
+                        )
+                        self._print(
+                            f"Unplugged EV {ev_to_unplug_session_id} from station {ev_to_unplug_station_id} to plug-in priority EV {actual_event.ev.session_id}"
+                        )
+
+                # Plugin the EV (priority or not)
+                self.network.plugin(actual_event.ev)
+                self.ev_history[actual_event.ev.session_id] = actual_event.ev
+
+                # Track priority status
+                if is_priority_event:
+                    self._priority_sessions.add(actual_event.ev.session_id)
+                    if self._auto_sync_priority:
+                        self._sync_priority_to_scheduler()
+
+                self.event_queue.add_event(
+                    UnplugEvent(actual_event.ev.departure, actual_event.ev)
+                )
+                self._resolve = True
+                self._last_schedule_update = actual_event.timestamp
 
     def _update_schedules(self, new_schedule):
         """Extend the current self.pilot_signals with the new pilot signal schedule.
